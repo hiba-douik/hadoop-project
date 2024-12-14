@@ -3,21 +3,24 @@ import {
   createRecipe, 
   getRecipeByTitle, 
   updateRecipe, 
-  deleteRecipe 
+  deleteRecipe, 
+  getAllRecipes
 } from '../controllers/recipeController.js';
 
 const router = express.Router();
 
 // Route to create a recipe
-router.post("/api/recipes/:userId", createRecipe);
+router.post("/:userId", createRecipe);
 
 // Route to get a specific recipe
-router.get("/api/recipe/:title", getRecipeByTitle);
+router.get("/:title", getRecipeByTitle);
 
 // Route to update a recipe
-router.put("/api/recipes/:userId", updateRecipe);
+router.put("/:userId", updateRecipe);
 
 // Route to delete a recipe
-router.delete("/api/recipes/:title", deleteRecipe);
+router.delete("/:title", deleteRecipe);
+// Route to get all recipes
+router.get('/', getAllRecipes);
 
 export default router;

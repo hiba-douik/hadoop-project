@@ -1,16 +1,22 @@
-// userController.js
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import client from '../config/hbaseConfig.js';
 
 // Helper functions
+// Load environment variables
+const JWT_SECRET = process.env.JWT_SECRET || 'default_jwt_secret';
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'default_refresh_secret';
+
+if (JWT_SECRET === 'default_jwt_secret' || JWT_REFRESH_SECRET === 'default_refresh_secret') {
+  console.warn('Warning: Using default JWT secrets. Set JWT_SECRET and JWT_REFRESH_SECRET in your environment for production.');
+}
 const generateAccessToken = (email) => {
-  return jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: '1d' });
+  return jwt.sign({ email }, JWT_SECRET, { expiresIn: '1d' });
 };
 
 const generateRefreshToken = (email) => {
-  return jwt.sign({ email }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
+  return jwt.sign({ email }, JWT_REFRESH_SECRET, { expiresIn: '7d' });
 };
 
 // Register a new user
@@ -74,15 +80,23 @@ export const loginUser = async (req, res) => {
 
   try {
     client.table('users').row(email).get((err, row) => {
-      if (err || row.length === 0) {
+      if (err || !row || row.length === 0) {
         return res.status(401).json({ message: 'Invalid credentials' });
       }
 
-      const user = row.reduce((acc, col) => {
-        const [family, qualifier] = col.column.split(':');
-        acc[`${family}:${qualifier}`] = col.$;
-        return acc;
-      }, {});
+      const user = {};
+
+      if (Array.isArray(row)) {
+        row.forEach((col) => {
+          const [family, qualifier] = col.column.split(':');
+          user[`${family}:${qualifier}`] = col.$;
+        });
+      } else if (typeof row === 'object') {
+        Object.entries(row).forEach(([key, col]) => {
+          const [family, qualifier] = key.split(':');
+          user[`${family}:${qualifier}`] = col.$;
+        });
+      }
 
       bcrypt.compare(password, user['info:password'], (compareErr, isMatch) => {
         if (compareErr) {
@@ -110,6 +124,23 @@ export const loginUser = async (req, res) => {
     return res.status(500).json({ message: 'Internal server error', details: error.message });
   }
 };
+// Delete user by ID
+export const deleteUser = async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    client.table('users').row(userId).delete((err) => {
+      if (err) {
+        return res.status(500).json({ message: 'Error deleting user', details: err.message });
+      }
+
+      return res.status(200).json({ message: 'User deleted successfully' });
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Internal server error', details: error.message });
+  }
+};
+
 
 // Get all users
 export const getAllUsers = async (req, res) => {
@@ -119,21 +150,35 @@ export const getAllUsers = async (req, res) => {
         return res.status(500).json({ message: 'Error retrieving users', details: err.message });
       }
 
-      const users = rows.map((row) => {
-        const user = {};
-        row.forEach((col) => {
-          const [family, qualifier] = col.column.split(':');
-          user[qualifier] = col.$;
-        });
-        return user;
-      });
+      const users = rows.reduce((acc, row) => {
+        const userKey = row.key;
+        
+        // Si l'utilisateur n'existe pas encore dans l'accumulator, créez-le
+        if (!acc[userKey]) {
+          acc[userKey] = { id: userKey };
+        }
 
-      return res.status(200).json({ users });
+        // Ajoutez les colonnes
+        const [family, qualifier] = row.column.split(':');
+        if (family === 'info') {
+          acc[userKey][qualifier] = row.$;
+        }
+
+        return acc;
+      }, {});
+
+      // Convertir l'objet en tableau et filtrer les utilisateurs incomplets
+      const userList = Object.values(users).filter(user => 
+        user.username && user.email && user.password
+      );
+
+      return res.status(200).json({ users: userList });
     });
   } catch (error) {
     return res.status(500).json({ message: 'Internal server error', details: error.message });
   }
 };
+
 
 // Get user by ID
 export const getUserById = async (req, res) => {
@@ -141,15 +186,23 @@ export const getUserById = async (req, res) => {
 
   try {
     client.table('users').row(userId).get((err, row) => {
-      if (err || row.length === 0) {
+      if (err || !row || row.length === 0) {
         return res.status(404).json({ message: 'User not found' });
       }
 
-      const user = row.reduce((acc, col) => {
-        const [family, qualifier] = col.column.split(':');
-        acc[qualifier] = col.$;
-        return acc;
-      }, {});
+      const user = {};
+
+      if (Array.isArray(row)) {
+        row.forEach((col) => {
+          const [family, qualifier] = col.column.split(':');
+          user[qualifier] = col.$;
+        });
+      } else if (typeof row === 'object') {
+        Object.entries(row).forEach(([key, col]) => {
+          const [family, qualifier] = key.split(':');
+          user[qualifier] = col.$;
+        });
+      }
 
       return res.status(200).json({ user });
     });
