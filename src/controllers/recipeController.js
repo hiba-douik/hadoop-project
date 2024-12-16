@@ -2,9 +2,13 @@ import client from '../config/hbaseConfig.js';
 import { v4 as uuidv4 } from 'uuid';
 
 // Controller function to create a recipe
-export async function createRecipe(req, res) {
+export const createRecipe = async (req, res) => {
+
   const { userId } = req.params;
+  console.log('User ID reçu dans le back-end:', userId);
   const { title, description, image, instructions, ingredients } = req.body;
+  
+
 
   // Validate required fields
   if (!title || !description || !image || !instructions || !ingredients) {

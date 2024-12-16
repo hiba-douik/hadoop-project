@@ -1,12 +1,14 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
 import client from '../config/hbaseConfig.js';
 
 // Helper functions
 // Load environment variables
 const JWT_SECRET = process.env.JWT_SECRET || 'default_jwt_secret';
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'default_refresh_secret';
+
 
 if (JWT_SECRET === 'default_jwt_secret' || JWT_REFRESH_SECRET === 'default_refresh_secret') {
   console.warn('Warning: Using default JWT secrets. Set JWT_SECRET and JWT_REFRESH_SECRET in your environment for production.');
@@ -28,35 +30,46 @@ export const registerUser = async (req, res) => {
   }
 
   try {
+    // Vérification si l'utilisateur existe déjà
     client.table('users').row(email).get((err, row) => {
       if (err && err.message.includes('404: Not Found')) {
+        // Générer un userId unique
+        const userId = uuidv4(); // Génère un identifiant unique pour l'utilisateur
+
+        // Hashing du mot de passe
         bcrypt.hash(password, 10, (hashErr, hashedPassword) => {
           if (hashErr) {
             return res.status(500).json({ message: 'Error hashing password', details: hashErr.message });
           }
 
+          // Création des données de l'utilisateur avec le userId
           const userData = [
             { column: 'info:username', '$': username },
+            { column: 'info:email', '$': email },
             { column: 'info:password', '$': hashedPassword },
+            { column: 'info:userId', '$': userId }, // Ajouter le userId
             { column: 'info:createdAt', '$': new Date().toISOString() },
           ];
 
+          // Enregistrer l'utilisateur dans la base de données
           client.table('users').row(email).put(userData, (putErr) => {
             if (putErr) {
               return res.status(500).json({ message: 'Error storing user data', details: putErr.message });
             }
 
+            // Génération des tokens
             const accessToken = generateAccessToken(email);
             const refreshToken = generateRefreshToken(email);
 
+            // Envoi du refresh token dans un cookie
             res.cookie('refreshToken', refreshToken, {
               httpOnly: true,
               secure: process.env.NODE_ENV === 'production',
               sameSite: 'Strict',
-              maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+              maxAge: 7 * 24 * 60 * 60 * 1000, // 7 jours
             });
 
-            return res.status(201).json({ email, username, accessToken });
+            return res.status(201).json({ email, username, userId, accessToken });
           });
         });
       } else if (row && row.length > 0) {
@@ -84,19 +97,12 @@ export const loginUser = async (req, res) => {
         return res.status(401).json({ message: 'Invalid credentials' });
       }
 
+      // Extraction des données utilisateur
       const user = {};
-
-      if (Array.isArray(row)) {
-        row.forEach((col) => {
-          const [family, qualifier] = col.column.split(':');
-          user[`${family}:${qualifier}`] = col.$;
-        });
-      } else if (typeof row === 'object') {
-        Object.entries(row).forEach(([key, col]) => {
-          const [family, qualifier] = key.split(':');
-          user[`${family}:${qualifier}`] = col.$;
-        });
-      }
+      row.forEach((col) => {
+        const [family, qualifier] = col.column.split(':');
+        user[`${family}:${qualifier}`] = col.$;
+      });
 
       bcrypt.compare(password, user['info:password'], (compareErr, isMatch) => {
         if (compareErr) {
@@ -114,16 +120,22 @@ export const loginUser = async (req, res) => {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
           sameSite: 'Strict',
-          maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+          maxAge: 7 * 24 * 60 * 60 * 1000, // 7 jours
         });
 
-        return res.status(200).json({ email, username: user['info:username'], accessToken });
+        return res.status(200).json({
+          email,
+          username: user['info:username'],
+          accessToken,
+          userId: email, // email comme userId
+        });
       });
     });
   } catch (error) {
     return res.status(500).json({ message: 'Internal server error', details: error.message });
   }
 };
+
 // Delete user by ID
 export const deleteUser = async (req, res) => {
   const { userId } = req.params;
@@ -185,6 +197,11 @@ export const getUserById = async (req, res) => {
   const { userId } = req.params;
 
   try {
+    // Check if the userId is valid
+    if (!userId) {
+      return res.status(400).json({ message: 'Invalid userId' });
+    }
+
     client.table('users').row(userId).get((err, row) => {
       if (err || !row || row.length === 0) {
         return res.status(404).json({ message: 'User not found' });
@@ -207,9 +224,11 @@ export const getUserById = async (req, res) => {
       return res.status(200).json({ user });
     });
   } catch (error) {
+    console.error('Internal Server Error:', error);
     return res.status(500).json({ message: 'Internal server error', details: error.message });
   }
 };
+
 
 // Update user by ID
 export const updateUser = async (req, res) => {
