@@ -17,7 +17,7 @@ router.post("/:userId", createRecipe);
 router.get("/:recipeId", getRecipeById);
 
 // Route to update a recipe
-router.put("/:userId", updateRecipe);
+router.put("/:recipeId", updateRecipe);
 
 // Récupérer toutes les recettes par userId
 router.get('/user/:userId', getRecipesByUserId);

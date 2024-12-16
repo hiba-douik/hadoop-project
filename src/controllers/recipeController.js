@@ -33,17 +33,17 @@ export const createRecipe = async (req, res) => {
 
       // Ajouter les instructions
       for (const [index, instruction] of instructions.entries()) {
-          await client.table('instructions').row(`instruction:${recipeId}:${index}`).put([
+          await client.table('instructions').row(`instruction:recipe:${recipeId}:${index}`).put([
               { column: 'instruction:step', $: instruction.step },
-              { column: 'instruction:recipeId', $: recipeId }
+              { column: 'instruction:recipeId', $: 'recipe:'+recipeId }
           ]);
       }
 
       // Ajouter les ingrédients
       for (const ingredient of ingredients) {
-          await client.table('ingredients').row(`ingredient:${recipeId}:${ingredient.name}`).put([
+          await client.table('ingredients').row(`ingredient:recipe:${recipeId}:${ingredient.name}`).put([
               { column: 'ingredient:name', $: ingredient.name },
-              { column: 'ingredient:recipeId', $: recipeId }
+              { column: 'ingredient:recipeId', $: 'recipe:'+recipeId }
           ]);
       }
 
@@ -68,116 +68,110 @@ export const createRecipe = async (req, res) => {
 
 // Controller function to get all recipes
 // Controller function to get all recipes
-export const getAllRecipes = async (req, res) => {
+export async function getAllRecipes(req, res) {
   try {
-    client.table('recipes').scan(async (err, recipeRows) => {
-      if (err) {
-        console.error("Erreur lors de la récupération des recettes:", err.message);
-        return res.status(500).json({ message: 'Erreur serveur', details: err.message });
+    // Fetch all recipes from the 'recipes' table
+    const recipeRows = await new Promise((resolve, reject) => {
+      client.table('recipes').scan((err, rows) => {
+        if (err) {
+          console.error('Error fetching recipes:', err.message);
+          reject(err);
+        } else {
+          resolve(rows);
+        }
+      });
+    });
+
+    // Transform the raw rows into structured recipe objects
+    const recipes = recipeRows.reduce((acc, row) => {
+      const [family, qualifier] = row.column.split(':');
+      const recipeId = row.key;
+
+      if (!acc[recipeId]) {
+        acc[recipeId] = { id: recipeId };
       }
 
-      console.log("Raw recipe data fetched:", recipeRows);
-
-      // Transform the rows into structured recipe objects
-      const recipes = recipeRows.reduce((acc, row) => {
-        const [family, qualifier] = row.column.split(':');
-        const recipeKey = row.key;
-
-        // Ensure the recipe object is initialized
-        if (!acc[recipeKey]) {
-          acc[recipeKey] = { id: recipeKey };
-        }
-
-        // Map recipe details if it's part of the 'recipe' family
-        if (family === 'recipe' && qualifier) {
-          acc[recipeKey][qualifier] = row.$;
-        }
-
-        return acc;
-      }, {});
-
-      console.log("Transformed Recipes:", recipes);
-
-      // Filter recipes based on the existence of key details
-      const recipeList = Object.values(recipes).filter(
-        (recipe) => recipe.title && recipe.description && recipe.image
-      );
-
-      // If no recipes found, return a 404
-      if (recipeList.length === 0) {
-        return res.status(404).json({ message: 'Aucune recette trouvée' });
+      if (family === 'recipe' && qualifier) {
+        acc[recipeId][qualifier] = row.$;
       }
 
-      console.log("Filtered Recipes:", recipeList);
+      return acc;
+    }, {});
 
-      const result = [];
+    // Filter valid recipes (those with title, description, and image)
+    const recipeList = Object.values(recipes).filter(
+      (recipe) => recipe.title && recipe.description && recipe.image
+    );
 
-      // Fetch associated instructions and ingredients for each recipe
-      for (let recipe of recipeList) {
+    if (recipeList.length === 0) {
+      return res.status(404).json({ message: 'Aucune recette trouvée' });
+    }
+
+    // Fetch instructions and ingredients for each recipe
+    const enrichedRecipes = await Promise.all(
+      recipeList.map(async (recipe) => {
         const recipeId = recipe.id;
 
-        // Fetch instructions for the current recipe
-        const instructions = await new Promise((resolve, reject) => {
-          client.table('instructions').scan((instErr, instructionRows) => {
-            if (instErr) {
-              console.error("Erreur lors de la récupération des instructions:", instErr.message);
-              return reject(instErr);
+        // Fetch instructions for the recipe
+        const instructionsResults = await new Promise((resolve, reject) => {
+          client.table('instructions').scan((err, rows) => {
+            if (err) {
+              console.error('Error fetching instructions:', err.message);
+              reject(err);
+            } else {
+              const recipeInstructions = rows.filter(
+                (row) =>
+                  row.key.startsWith(`instruction:${recipeId}`) &&
+                  row.column === 'instruction:step'
+              );
+              resolve(recipeInstructions);
             }
-
-            const recipeInstructions = instructionRows.reduce((instAcc, instRow) => {
-              const [family, qualifier] = instRow.column.split(':');
-              if (family === 'instruction' && qualifier === 'step') {
-                instAcc.push(instRow.$);
-              }
-              return instAcc;
-            }, []);
-
-            resolve(recipeInstructions);
           });
         });
 
-        // Fetch ingredients for the current recipe
-        const ingredients = await new Promise((resolve, reject) => {
-          client.table('ingredients').scan((ingErr, ingredientRows) => {
-            if (ingErr) {
-              console.error("Erreur lors de la récupération des ingrédients:", ingErr.message);
-              return reject(ingErr);
+        // Fetch ingredients for the recipe
+        const ingredientsResults = await new Promise((resolve, reject) => {
+          client.table('ingredients').scan((err, rows) => {
+            if (err) {
+              console.error('Error fetching ingredients:', err.message);
+              reject(err);
+            } else {
+              const recipeIngredients = rows.filter(
+                (row) =>
+                  row.key.startsWith(`ingredient:${recipeId}`) &&
+                  row.column === 'ingredient:name'
+              );
+              resolve(recipeIngredients);
             }
-
-            const recipeIngredients = ingredientRows.reduce((ingAcc, ingRow) => {
-              const [family, qualifier] = ingRow.column.split(':');
-              if (family === 'ingredient' && qualifier === 'name') {
-                ingAcc.push(ingRow.$);
-              }
-              return ingAcc;
-            }, []);
-
-            resolve(recipeIngredients);
           });
         });
 
-        // Add the recipe details, instructions, and ingredients to the result
-        result.push({
+        // Parse instructions and ingredients
+        const instructions = instructionsResults.map((inst) => inst.$ || 'Step not available');
+        const ingredients = ingredientsResults.map((ing) => ing.$ || 'Ingredient not available');
+
+        // Return enriched recipe object
+        return {
           recipeId,
           title: recipe.title,
           description: recipe.description,
           image: recipe.image,
-          instructions: instructions,
-          ingredients: ingredients,
-        });
-      }
+          instructions,
+          ingredients,
+        };
+      })
+    );
 
-      // Return the final enriched recipes
-      res.status(200).json({
-        message: 'Toutes les recettes récupérées avec succès',
-        recipes: result,
-      });
+    // Send the final response
+    res.status(200).json({
+      message: 'Toutes les recettes récupérées avec succès',
+      recipes: enrichedRecipes,
     });
   } catch (error) {
-    console.error("Erreur lors de la récupération des recettes:", error);
+    console.error('Error in getAllRecipes:', error);
     res.status(500).json({ message: 'Erreur serveur', details: error.message });
   }
-};
+}
 
 
 // Controller function to get all recipes by userId
@@ -394,7 +388,7 @@ export async function getRecipeById(req, res) {
 
 // Controller function to update a recipe
 export async function updateRecipe(req, res) {
-  const { userId } = req.params;
+  const { recipeId } = req.params;
   const { title, description, image, instructions, ingredients } = req.body;
 
   // Validate required fields
@@ -403,35 +397,42 @@ export async function updateRecipe(req, res) {
   }
 
   try {
-    // Generate new recipe ID
-    const recipeId = uuidv4(); // We generate a new ID to simulate updating by creating a new entry
-    const recipeRow = `recipe:${recipeId}`;
-    const userRow = `user:${userId}`; // Use userId (email) as the user row key
+    // Fetch the recipe to ensure it exists
+    const recipeRow = await new Promise((resolve, reject) => {
+      client.table('recipes').row(recipeId).get((err, row) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(row);
+        }
+      });
+    });
+
+    // If recipe not found, return an error
+    if (!recipeRow || Object.keys(recipeRow).length === 0) {
+      return res.status(404).json({ message: 'Recette non trouvée' });
+    }
 
     // Update the recipe details in the 'recipes' table
-    await client.table('recipes').row(recipeRow).put([
+    await client.table('recipes').row(recipeId).put([
       { column: 'recipe:title', $: title },
       { column: 'recipe:description', $: description },
       { column: 'recipe:image', $: image },
-      { column: 'recipe:userId', $: userId }
     ]);
 
-    // Ensure user exists (checking user details in the 'user' table)
-    await client.table('user').row(userRow).put([
-      { column: 'info:id', $: userId }
-    ]);
-
-    // Add or update instructions
+    // Update or add instructions for the given recipeId
     for (const [index, instruction] of instructions.entries()) {
-      await client.table('instructions').row(`instruction:${recipeId}:${index}`).put([
+      const instructionRowKey = `instruction:${recipeId}:${index}`;
+      await client.table('instructions').row(instructionRowKey).put([
         { column: 'instruction:step', $: instruction.step },
         { column: 'instruction:recipeId', $: recipeId }
       ]);
     }
 
-    // Add or update ingredients
+    // Update or add ingredients for the given recipeId
     for (const ingredient of ingredients) {
-      await client.table('ingredients').row(`ingredient:${recipeId}:${ingredient.name}`).put([
+      const ingredientRowKey = `ingredient:${recipeId}:${ingredient.name}`;
+      await client.table('ingredients').row(ingredientRowKey).put([
         { column: 'ingredient:name', $: ingredient.name },
         { column: 'ingredient:recipeId', $: recipeId }
       ]);
@@ -445,7 +446,6 @@ export async function updateRecipe(req, res) {
         title,
         description,
         image,
-        userId,
         instructions,
         ingredients
       }
@@ -455,6 +455,8 @@ export async function updateRecipe(req, res) {
     res.status(500).json({ message: 'Erreur serveur', details: error.message });
   }
 }
+
+
 
 // Controller function to delete a recipe
 export const deleteRecipe = async (req, res) => {

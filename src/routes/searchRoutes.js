@@ -4,6 +4,6 @@ const router = express.Router();
 
 
 // Route pour la recherche de recettes
-router.get('/api/search', searchRecipes);
+router.get('/', searchRecipes);
 
 export default router;

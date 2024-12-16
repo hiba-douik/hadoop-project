@@ -1,45 +1,106 @@
 import client from "../config/hbaseConfig.js";
 
 export const searchRecipes = async (req, res) => {
-    try {
-        let ingredients = req.query.ingredients;
+  const { ingredients } = req.query;
 
-        // Vérifier si 'ingredients' est une chaîne, puis la convertir en tableau
-        if (typeof ingredients === 'string') {
-            ingredients = ingredients.split(',').map(ingredient => ingredient.trim());
-        }
+  console.log(ingredients)
 
-        // Si 'ingredients' est déjà un tableau, le traiter directement
-        if (Array.isArray(ingredients)) {
-            ingredients = ingredients.map(ingredient => ingredient.trim());
-        } else {
-            return res.status(400).json({ message: 'Le paramètre "ingredients" est requis et doit être une chaîne ou un tableau.' });
-        }
+  // Validate required query parameter
+  if (!ingredients || typeof ingredients !== "string") {
+    return res.status(400).json({
+      message: 'Le paramètre "ingredients" est requis et doit être une chaîne de caractères.',
+    });
+  }
 
-        // Construire une requête HBase pour rechercher des recettes avec des ingrédients
-        const table = client.table('recipes');
-        const ingredientsKey = ingredients.join('|'); // Assumption: use a composite key for searching
+  try {
+    // Parse the ingredients into a list
+    const ingredientList = ingredients
+      .split(",")
+      .map((ingredient) => ingredient.trim())
+      .filter(Boolean);
 
-        const rows = await table.getRow(ingredientsKey);
-        
-        // Vérifier si des recettes ont été trouvées
-        if (!rows || rows.length === 0) {
-            return res.status(404).json({ message: 'Aucune recette trouvée pour les ingrédients fournis.' });
-        }
-
-        // Mapper les résultats pour envoyer les recettes
-        const recipes = rows.map(row => ({
-            title: row.title,
-            image: row.image,
-            ingredients: row.ingredients.split('|') // Assumption: ingredients stored as a string separated by '|'
-        }));
-
-        res.status(200).json(recipes);
-
-    } catch (error) {
-        console.error('Error fetching recipes:', error);
-        res.status(500).json({ message: 'Une erreur est survenue lors de la récupération des recettes.' });
+    if (ingredientList.length === 0) {
+      return res.status(400).json({
+        message: "Veuillez fournir au moins un ingrédient valide.",
+      });
     }
+
+    // Fetch all rows for the given ingredients
+    const recipesByIngredient = await Promise.all(
+      ingredientList.map((ingredient) =>
+        new Promise((resolve, reject) => {
+          client.table("ingredients").scan(
+            {
+              filter: {
+                op: "EQUAL",
+                qualifier: "ingredient:name",
+                comparator: ingredient,
+              },
+            },
+            (err, rows) => {
+              if (err) reject(err);
+              else resolve(rows);
+            }
+          );
+        })
+      )
+    );
+
+    // Extract unique recipe IDs
+    const recipeIds = [
+      ...new Set(
+        recipesByIngredient
+          .flat()
+          .map((row) => row["ingredient:recipeId"])
+      ),
+    ];
+
+    if (recipeIds.length === 0) {
+      return res.status(404).json({
+        message: "Aucune recette trouvée pour les ingrédients fournis.",
+      });
+    }
+
+    // Fetch recipe details for each unique recipeId
+    const recipes = await Promise.all(
+      recipeIds.map((recipeId) =>
+        new Promise((resolve, reject) => {
+          client.table("recipes").row(recipeId).get((err, recipeRow) => {
+            if (err) {
+              reject(err);
+            } else if (!recipeRow || Object.keys(recipeRow).length === 0) {
+              resolve(null);
+            } else {
+              resolve({
+                recipeId,
+                title: recipeRow["recipe:title"],
+                description: recipeRow["recipe:description"],
+                image: recipeRow["recipe:image"],
+                ingredients: recipesByIngredient
+                  .flat()
+                  .filter((row) => row["ingredient:recipeId"] === recipeId)
+                  .map((row) => row["ingredient:name"]),
+              });
+            }
+          });
+        })
+      )
+    );
+
+    const filteredRecipes = recipes.filter(Boolean);
+
+    if (filteredRecipes.length === 0) {
+      return res.status(404).json({
+        message: "Aucune recette complète trouvée.",
+      });
+    }
+
+    res.status(200).json(filteredRecipes);
+  } catch (error) {
+    console.error("Erreur lors de la recherche des recettes:", error);
+    res.status(500).json({
+      message: "Erreur serveur",
+      details: error.message,
+    });
+  }
 };
-
-
