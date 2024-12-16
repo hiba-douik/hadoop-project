@@ -11,9 +11,12 @@ dotenv.config();
 
 const app = express();
 
-// Middleware to parse JSON body
-app.use(bodyParser.json());
-app.use(express.json());
+// Middleware to parse JSON body with increased limit
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(express.json({ limit: '50mb' }));
+
+// Middleware for parsing URL-encoded payload with increased limit
+app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
 
 // Add CORS middleware
 app.use(cors({
@@ -39,4 +42,3 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
-

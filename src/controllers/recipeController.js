@@ -3,217 +3,394 @@ import { v4 as uuidv4 } from 'uuid';
 
 // Controller function to create a recipe
 export const createRecipe = async (req, res) => {
-
-  const { userId } = req.params;
+  const { userId } = req.params; // Ici, userId = email
   console.log('User ID reçu dans le back-end:', userId);
+
   const { title, description, image, instructions, ingredients } = req.body;
-  
 
-
-  // Validate required fields
+  // Validation des champs requis
   if (!title || !description || !image || !instructions || !ingredients) {
-    return res.status(400).json({ message: 'Tous les champs sont requis' });
+      return res.status(400).json({ message: 'Tous les champs sont requis' });
   }
 
   try {
-    // Generate unique identifiers
-    const recipeId = uuidv4();
-    const recipeRow = `recipe:${recipeId}`;
-    const userRow = `user:${userId}`;
+      const recipeId = uuidv4();
+      const recipeRow = `recipe:${recipeId}`;
+      const userRow = `user:${userId}`; // Utilise l'email comme clé pour HBase
 
-    // Store recipe details
-    await client.table('recipes').row(recipeRow).put([
-      { column: 'recipe:title', $: title },
-      { column: 'recipe:description', $: description },
-      { column: 'recipe:image', $: image },
-      { column: 'recipe:userId', $: userId }
-    ]);
-
-    // Ensure user exists
-    await client.table('users').row(userRow).put([
-      { column: 'user:id', $: userId }
-    ]);
-
-    // Store instructions
-    for (const [index, instruction] of instructions.entries()) {
-      const instructionRow = `instruction:${recipeId}:${index}`;
-      await client.table('instructions').row(instructionRow).put([
-        { column: 'instruction:step', $: instruction.step },
-        { column: 'instruction:recipeId', $: recipeId }
+      // Insérer les données de la recette
+      await client.table('recipes').row(recipeRow).put([
+          { column: 'recipe:title', $: title },
+          { column: 'recipe:description', $: description },
+          { column: 'recipe:image', $: image },
+          { column: 'recipe:userId', $: userId }
       ]);
-    }
 
-    // Store ingredients
-    for (const ingredient of ingredients) {
-      const ingredientRow = `ingredient:${recipeId}:${ingredient.name}`;
-      await client.table('ingredients').row(ingredientRow).put([
-        { column: 'ingredient:name', $: ingredient.name },
-        { column: 'ingredient:recipeId', $: recipeId }
+      // Vérifier l'existence de l'utilisateur
+      await client.table('user').row(userRow).put([
+          { column: 'info:id', $: userId }
       ]);
-    }
 
-    // Create user-recipe relationship
-    await client.table('user_recipes').row(userRow).put([
-      { column: 'recipe:recipeId', $: recipeId }
-    ]);
-
-    res.status(201).json({
-      message: 'Recette créée avec succès',
-      recipe: {
-        recipeId,
-        title,
-        description,
-        image,
-        userId,
-        instructions,
-        ingredients
+      // Ajouter les instructions
+      for (const [index, instruction] of instructions.entries()) {
+          await client.table('instructions').row(`instruction:${recipeId}:${index}`).put([
+              { column: 'instruction:step', $: instruction.step },
+              { column: 'instruction:recipeId', $: recipeId }
+          ]);
       }
-    });
-  } catch (error) {
-    console.error('Erreur lors de la création de la recette:', error);
-    res.status(500).json({ message: 'Erreur serveur' });
-  }
-}
 
-// Controller function to get all recipes
-export const getAllRecipes = async (req, res) => {
-  try {
-    client.table('recipes').scan((err, rows) => {
-      if (err) {
-        return res.status(500).json({ message: 'Erreur lors de la récupération des recettes', details: err.message });
+      // Ajouter les ingrédients
+      for (const ingredient of ingredients) {
+          await client.table('ingredients').row(`ingredient:${recipeId}:${ingredient.name}`).put([
+              { column: 'ingredient:name', $: ingredient.name },
+              { column: 'ingredient:recipeId', $: recipeId }
+          ]);
       }
-      
-      const recipes = rows.reduce((acc, row) => {
-        const recipeKey = row.key;
-        
-        // Si la recette n'existe pas encore dans l'accumulateur, créez-la
-        if (!acc[recipeKey]) {
-          acc[recipeKey] = { id: recipeKey };
-        }
-        
-        // Ajoutez les colonnes par famille
-        const [family, qualifier] = row.column.split(':');
-        
-        // Logique de remplissage des informations de la recette
-        if (family === 'info') {
-          acc[recipeKey][qualifier] = row.$;
-        }
-        
-        if (family === 'ingredients') {
-          if (!acc[recipeKey].ingredients) {
-            acc[recipeKey].ingredients = {};
+
+      res.status(201).json({
+          message: 'Recette créée avec succès',
+          recipe: {
+              recipeId,
+              title,
+              description,
+              image,
+              userId,
+              instructions,
+              ingredients
           }
-          acc[recipeKey].ingredients[qualifier] = row.$;
-        }
-        
-        if (family === 'metadata') {
-          if (!acc[recipeKey].metadata) {
-            acc[recipeKey].metadata = {};
-          }
-          acc[recipeKey].metadata[qualifier] = row.$;
-        }
-        
-        return acc;
-      }, {});
-      
-      // Convertir l'objet en tableau et filtrer les recettes complètes
-      const recipeList = Object.values(recipes).filter(recipe => 
-        recipe.name && recipe.description && recipe.instructions
-      );
-      
-      return res.status(200).json({ 
-        message: 'Toutes les recettes récupérées avec succès',
-        recipes: recipeList 
       });
-    });
   } catch (error) {
-    return res.status(500).json({ 
-      message: 'Erreur serveur', 
-      details: error.message 
-    });
+      console.error('Erreur lors de la création de la recette:', error);
+      res.status(500).json({ message: 'Erreur serveur', details: error.message });
   }
 };
 
-// Controller function to get a recipe by title
-export async function getRecipeByTitle(req, res) {
-  const { title } = req.params;
+
+// Controller function to get all recipes
+// Controller function to get all recipes
+export const getAllRecipes = async (req, res) => {
+  try {
+    client.table('recipes').scan(async (err, recipeRows) => {
+      if (err) {
+        console.error("Erreur lors de la récupération des recettes:", err.message);
+        return res.status(500).json({ message: 'Erreur serveur', details: err.message });
+      }
+
+      console.log("Raw recipe data fetched:", recipeRows);
+
+      // Transform the rows into structured recipe objects
+      const recipes = recipeRows.reduce((acc, row) => {
+        const [family, qualifier] = row.column.split(':');
+        const recipeKey = row.key;
+
+        // Ensure the recipe object is initialized
+        if (!acc[recipeKey]) {
+          acc[recipeKey] = { id: recipeKey };
+        }
+
+        // Map recipe details if it's part of the 'recipe' family
+        if (family === 'recipe' && qualifier) {
+          acc[recipeKey][qualifier] = row.$;
+        }
+
+        return acc;
+      }, {});
+
+      console.log("Transformed Recipes:", recipes);
+
+      // Filter recipes based on the existence of key details
+      const recipeList = Object.values(recipes).filter(
+        (recipe) => recipe.title && recipe.description && recipe.image
+      );
+
+      // If no recipes found, return a 404
+      if (recipeList.length === 0) {
+        return res.status(404).json({ message: 'Aucune recette trouvée' });
+      }
+
+      console.log("Filtered Recipes:", recipeList);
+
+      const result = [];
+
+      // Fetch associated instructions and ingredients for each recipe
+      for (let recipe of recipeList) {
+        const recipeId = recipe.id;
+
+        // Fetch instructions for the current recipe
+        const instructions = await new Promise((resolve, reject) => {
+          client.table('instructions').scan((instErr, instructionRows) => {
+            if (instErr) {
+              console.error("Erreur lors de la récupération des instructions:", instErr.message);
+              return reject(instErr);
+            }
+
+            const recipeInstructions = instructionRows.reduce((instAcc, instRow) => {
+              const [family, qualifier] = instRow.column.split(':');
+              if (family === 'instruction' && qualifier === 'step') {
+                instAcc.push(instRow.$);
+              }
+              return instAcc;
+            }, []);
+
+            resolve(recipeInstructions);
+          });
+        });
+
+        // Fetch ingredients for the current recipe
+        const ingredients = await new Promise((resolve, reject) => {
+          client.table('ingredients').scan((ingErr, ingredientRows) => {
+            if (ingErr) {
+              console.error("Erreur lors de la récupération des ingrédients:", ingErr.message);
+              return reject(ingErr);
+            }
+
+            const recipeIngredients = ingredientRows.reduce((ingAcc, ingRow) => {
+              const [family, qualifier] = ingRow.column.split(':');
+              if (family === 'ingredient' && qualifier === 'name') {
+                ingAcc.push(ingRow.$);
+              }
+              return ingAcc;
+            }, []);
+
+            resolve(recipeIngredients);
+          });
+        });
+
+        // Add the recipe details, instructions, and ingredients to the result
+        result.push({
+          recipeId,
+          title: recipe.title,
+          description: recipe.description,
+          image: recipe.image,
+          instructions: instructions,
+          ingredients: ingredients,
+        });
+      }
+
+      // Return the final enriched recipes
+      res.status(200).json({
+        message: 'Toutes les recettes récupérées avec succès',
+        recipes: result,
+      });
+    });
+  } catch (error) {
+    console.error("Erreur lors de la récupération des recettes:", error);
+    res.status(500).json({ message: 'Erreur serveur', details: error.message });
+  }
+};
+
+
+// Controller function to get all recipes by userId
+// Controller function to get all recipes by userId
+export const getRecipesByUserId = async (req, res) => {
+  const { userId } = req.params;
+
+  console.log("User ID received:", userId);
+
+  if (!userId) {
+    return res.status(400).json({ message: "Le userId est requis." });
+  }
 
   try {
-    // Scan for recipe by title
-    const recipeResults = await new Promise((resolve, reject) => {
-      client.table('recipes').scan({
-        filter: {
-          type: 'ValueFilter',
-          op: 'EQUAL',
-          comparator: title
+    client.table("recipes").scan(async (err, recipeRows) => {
+      if (err) {
+        console.error("Erreur lors de la récupération des recettes:", err.message);
+        return res.status(500).json({ message: "Erreur serveur", details: err.message });
+      }
+
+      console.log("Raw recipe data fetched:", recipeRows);
+
+      const userRecipes = recipeRows.reduce((acc, row) => {
+        const [family, qualifier] = row.column.split(":");
+        const recipeKey = row.key;
+
+        if (!acc[recipeKey]) {
+          acc[recipeKey] = { id: recipeKey };
         }
-      }, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
+
+        if (family === "recipe" && qualifier) {
+          acc[recipeKey][qualifier] = row.$;
+        }
+
+        return acc;
+      }, {});
+
+      // Normalize userId and compare
+      const filteredRecipes = Object.values(userRecipes).filter((recipe) => {
+        console.log(`Comparing recipe.userId: "${recipe.userId}" with userId: "${userId}"`);
+        return recipe.userId?.trim().toLowerCase() === userId.trim().toLowerCase();
+      });
+
+      if (filteredRecipes.length === 0) {
+        return res
+          .status(404)
+          .json({ message: `Aucune recette trouvée pour l'utilisateur ${userId}` });
+      }
+
+      console.log("Filtered Recipes:", filteredRecipes);
+
+      const result = [];
+
+      for (let recipe of filteredRecipes) {
+        const recipeId = recipe.id;
+
+        const instructions = await new Promise((resolve, reject) => {
+          client.table("instructions").scan((instErr, instructionRows) => {
+            if (instErr) {
+              console.error("Erreur lors de la récupération des instructions:", instErr.message);
+              return reject(instErr);
+            }
+
+            const recipeInstructions = instructionRows
+              .reduce((instAcc, instRow) => {
+                const [family, qualifier] = instRow.column.split(":");
+                if (family === "instruction" && qualifier === "step") {
+                  instAcc.push(instRow.$);
+                }
+                return instAcc;
+              }, [])
+              .filter((step) => step.includes(recipeId));
+
+            resolve(recipeInstructions);
+          });
+        });
+
+        const ingredients = await new Promise((resolve, reject) => {
+          client.table("ingredients").scan((ingErr, ingredientRows) => {
+            if (ingErr) {
+              console.error("Erreur lors de la récupération des ingrédients:", ingErr.message);
+              return reject(ingErr);
+            }
+
+            const recipeIngredients = ingredientRows
+              .reduce((ingAcc, ingRow) => {
+                const [family, qualifier] = ingRow.column.split(":");
+                if (family === "ingredient" && qualifier === "name") {
+                  ingAcc.push(ingRow.$);
+                }
+                return ingAcc;
+              }, [])
+              .filter((name) => name.includes(recipeId));
+
+            resolve(recipeIngredients);
+          });
+        });
+
+        result.push({
+          recipeId,
+          title: recipe.title,
+          description: recipe.description,
+          image: recipe.image,
+          instructions: instructions,
+          ingredients: ingredients,
+        });
+      }
+
+      res.status(200).json({
+        message: "Recettes récupérées avec succès",
+        recipes: result,
+      });
+    });
+  } catch (error) {
+    console.error("Erreur lors de la récupération des recettes par userId:", error);
+    res.status(500).json({ message: "Erreur serveur", details: error.message });
+  }
+};
+
+export async function getRecipeById(req, res) {
+  const { recipeId } = req.params;
+  console.log('Recipe ID:', recipeId);
+
+  try {
+    // Fetch recipe by recipeId from the 'recipes' table
+    const recipeRows = await new Promise((resolve, reject) => {
+      client.table('recipes').scan((err, rows) => {
+        if (err) {
+          console.error('Error fetching recipe:', err.message);
+          reject(err);
+        } else {
+          // Filter rows to find the specific recipe
+          const matchedRows = rows.filter(row => 
+            row.key === recipeId && row.column.startsWith('recipe:')
+          );
+          resolve(matchedRows);
+        }
       });
     });
 
-    // If no recipe found
-    if (recipeResults.length === 0) {
+    // If recipe not found
+    if (!recipeRows || recipeRows.length === 0) {
       return res.status(404).json({ message: 'Recette non trouvée' });
     }
 
-    const recipeRow = recipeResults[0];
-    const recipeId = recipeRow.key.split(':')[1];
+    // Convert recipe rows to a recipe object
+    const recipe = recipeRows.reduce((acc, row) => {
+      const [, qualifier] = row.column.split(':');
+      acc[qualifier] = row.$;
+      return acc;
+    }, { id: recipeId });
 
-    // Fetch instructions
+    // Fetch instructions for the given recipeId
     const instructionsResults = await new Promise((resolve, reject) => {
-      client.table('instructions').scan({
-        filter: {
-          type: 'ValueFilter',
-          op: 'EQUAL',
-          comparator: recipeId
+      client.table('instructions').scan((err, rows) => {
+        if (err) {
+          console.error('Error fetching instructions:', err.message);
+          reject(err);
+        } else {
+          // Filter instructions for this specific recipe
+          const recipeInstructions = rows.filter(row => 
+            row.key.startsWith(`instruction:${recipeId}`) && 
+            row.column === 'instruction:step'
+          );
+          resolve(recipeInstructions);
         }
-      }, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
       });
     });
 
-    // Fetch ingredients
+    // Fetch ingredients for the given recipeId
     const ingredientsResults = await new Promise((resolve, reject) => {
-      client.table('ingredients').scan({
-        filter: {
-          type: 'ValueFilter',
-          op: 'EQUAL',
-          comparator: recipeId
+      client.table('ingredients').scan((err, rows) => {
+        if (err) {
+          console.error('Error fetching ingredients:', err.message);
+          reject(err);
+        } else {
+          // Filter ingredients for this specific recipe
+          const recipeIngredients = rows.filter(row => 
+            row.key.startsWith(`ingredient:${recipeId}`) && 
+            row.column === 'ingredient:name'
+          );
+          resolve(recipeIngredients);
         }
-      }, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
       });
     });
 
     // Parse instructions and ingredients
     const instructions = instructionsResults.map(inst => ({
-      step: inst.columns['instruction:step']
+      step: inst.$ || 'Step not available'
     }));
 
     const ingredients = ingredientsResults.map(ing => ({
-      name: ing.columns['ingredient:name']
+      name: ing.$ || 'Ingredient not available'
     }));
 
+    // Send the response with recipe, instructions, and ingredients
     res.status(200).json({
       message: 'Recette récupérée avec succès',
       recipe: {
-        title: recipeRow.columns['recipe:title'],
-        description: recipeRow.columns['recipe:description'],
-        image: recipeRow.columns['recipe:image'],
-        userId: recipeRow.columns['recipe:userId']
+        title: recipe.title || 'Title not available',
+        description: recipe.description || 'Description not available',
+        image: recipe.image || 'Image not available',
+        userId: recipe.userId || 'User ID not available'
       },
       instructions,
       ingredients
     });
   } catch (error) {
-    console.error('Erreur lors de la récupération de la recette:', error);
-    res.status(500).json({ message: 'Erreur serveur' });
+    console.error('Error in getRecipeById:', error);
+    res.status(500).json({ message: 'Erreur serveur', details: error.message });
   }
 }
+
 
 // Controller function to update a recipe
 export async function updateRecipe(req, res) {
@@ -226,95 +403,45 @@ export async function updateRecipe(req, res) {
   }
 
   try {
-    // Scan for existing recipe by title
-    const recipeResults = await new Promise((resolve, reject) => {
-      client.table('recipes').scan({
-        filter: {
-          type: 'ValueFilter',
-          op: 'EQUAL',
-          comparator: title
-        }
-      }, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
+    // Generate new recipe ID
+    const recipeId = uuidv4(); // We generate a new ID to simulate updating by creating a new entry
+    const recipeRow = `recipe:${recipeId}`;
+    const userRow = `user:${userId}`; // Use userId (email) as the user row key
 
-    // If no recipe found
-    if (recipeResults.length === 0) {
-      return res.status(404).json({ message: 'Recette non trouvée' });
-    }
-
-    const oldRecipeRow = recipeResults[0];
-    const recipeId = oldRecipeRow.key.split(':')[1];
-    const newRecipeId = uuidv4();
-    const newRecipeRow = `recipe:${newRecipeId}`;
-
-    // Delete old recipe and create a new one
-    await client.table('recipes').row(oldRecipeRow.key).delete();
-    await client.table('recipes').row(newRecipeRow).put([
+    // Update the recipe details in the 'recipes' table
+    await client.table('recipes').row(recipeRow).put([
       { column: 'recipe:title', $: title },
       { column: 'recipe:description', $: description },
       { column: 'recipe:image', $: image },
       { column: 'recipe:userId', $: userId }
     ]);
 
-    // Delete and recreate instructions
-    const oldInstructions = await new Promise((resolve, reject) => {
-      client.table('instructions').scan({
-        filter: {
-          type: 'ValueFilter',
-          op: 'EQUAL',
-          comparator: recipeId
-        }
-      }, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
-    
-    for (const oldInst of oldInstructions) {
-      await client.table('instructions').row(oldInst.key).delete();
-    }
+    // Ensure user exists (checking user details in the 'user' table)
+    await client.table('user').row(userRow).put([
+      { column: 'info:id', $: userId }
+    ]);
 
+    // Add or update instructions
     for (const [index, instruction] of instructions.entries()) {
-      const instructionRow = `instruction:${newRecipeId}:${index}`;
-      await client.table('instructions').row(instructionRow).put([
+      await client.table('instructions').row(`instruction:${recipeId}:${index}`).put([
         { column: 'instruction:step', $: instruction.step },
-        { column: 'instruction:recipeId', $: newRecipeId }
+        { column: 'instruction:recipeId', $: recipeId }
       ]);
     }
 
-    // Delete and recreate ingredients
-    const oldIngredients = await new Promise((resolve, reject) => {
-      client.table('ingredients').scan({
-        filter: {
-          type: 'ValueFilter',
-          op: 'EQUAL',
-          comparator: recipeId
-        }
-      }, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
-    
-    for (const oldIng of oldIngredients) {
-      await client.table('ingredients').row(oldIng.key).delete();
-    }
-
+    // Add or update ingredients
     for (const ingredient of ingredients) {
-      const ingredientRow = `ingredient:${newRecipeId}:${ingredient.name}`;
-      await client.table('ingredients').row(ingredientRow).put([
+      await client.table('ingredients').row(`ingredient:${recipeId}:${ingredient.name}`).put([
         { column: 'ingredient:name', $: ingredient.name },
-        { column: 'ingredient:recipeId', $: newRecipeId }
+        { column: 'ingredient:recipeId', $: recipeId }
       ]);
     }
 
+    // Return updated recipe response
     res.status(200).json({
       message: 'Recette mise à jour avec succès',
       recipe: {
-        recipeId: newRecipeId,
+        recipeId,
         title,
         description,
         image,
@@ -325,84 +452,68 @@ export async function updateRecipe(req, res) {
     });
   } catch (error) {
     console.error('Erreur lors de la mise à jour de la recette:', error);
-    res.status(500).json({ message: 'Erreur serveur' });
+    res.status(500).json({ message: 'Erreur serveur', details: error.message });
   }
 }
 
 // Controller function to delete a recipe
-export async function deleteRecipe(req, res) {
-  const { title } = req.params;
+export const deleteRecipe = async (req, res) => {
+  const { recipeId } = req.params; // Use recipeId from params
+  console.log('Request Parameters:', req.params);
 
   try {
-    // Scan for recipe by title
-    const recipeResults = await new Promise((resolve, reject) => {
-      client.table('recipes').scan({
-        filter: {
-          type: 'ValueFilter',
-          op: 'EQUAL',
-          comparator: title
+    const recipeTable = client.table('recipes'); // Get reference to the recipes table
+    
+    console.log(`Fetching recipe details for recipeId: ${recipeId}`);
+    
+    // Try to fetch the recipe by the recipeId (direct lookup)
+    const recipeRow = await new Promise((resolve, reject) => {
+      recipeTable.row(recipeId).get((err, row) => {
+        if (err) {
+          console.error('Error during get of recipe:', err.message);
+          reject(err);
+        } else {
+          resolve(row);
         }
-      }, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
       });
     });
 
-    // If no recipe found
-    if (recipeResults.length === 0) {
+    // If recipeRow is empty, it means the recipe does not exist
+    if (!recipeRow || Object.keys(recipeRow).length === 0) {
       return res.status(404).json({ message: 'Recette non trouvée' });
     }
 
-    const recipeRow = recipeResults[0];
-    const recipeId = recipeRow.key.split(':')[1];
+    console.log(`Found recipeId: ${recipeId}`);
 
-    // Delete recipe
-    await client.table('recipes').row(recipeRow.key).delete();
-
-    // Delete related instructions
-    const instructions = await new Promise((resolve, reject) => {
-      client.table('instructions').scan({
-        filter: {
-          type: 'ValueFilter',
-          op: 'EQUAL',
-          comparator: recipeId
+    // Deleting the recipe itself in the 'recipes' table using the row key
+    await new Promise((resolve, reject) => {
+      recipeTable.row(recipeId).delete((err) => {
+        if (err) {
+          console.error(`Error deleting recipe ${recipeId}:`, err);
+          reject(err);
+        } else {
+          console.log(`Recipe ${recipeId} deleted successfully.`);
+          resolve();
         }
-      }, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
       });
     });
-    
-    for (const inst of instructions) {
-      await client.table('instructions').row(inst.key).delete();
-    }
 
-    // Delete related ingredients
-    const ingredients = await new Promise((resolve, reject) => {
-      client.table('ingredients').scan({
-        filter: {
-          type: 'ValueFilter',
-          op: 'EQUAL',
-          comparator: recipeId
-        }
-      }, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
-    
-    for (const ing of ingredients) {
-      await client.table('ingredients').row(ing.key).delete();
-    }
-
-    res.status(200).json({
-      message: 'Recette supprimée avec succès',
-      title
-    });
+    res.status(200).json({ message: 'Recette supprimée avec succès', recipeId });
   } catch (error) {
-    console.error('Erreur lors de la suppression de la recette:', error);
-    res.status(500).json({ message: 'Erreur serveur' });
+    console.error('Error in deleteRecipe:', error);
+    res.status(500).json({ message: 'Erreur serveur', details: error.message });
   }
-}
+};
+
+
+
+
+
+
+
+
+
+
+
 
 console.log("Recipe controller functions have been updated.");
